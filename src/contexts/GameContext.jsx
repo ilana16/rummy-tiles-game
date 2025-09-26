@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useReducer, useEffect } from 'react';
-import { auth, subscribeToGameRoom, updateGameState, addChatMessage as firebaseAddChatMessage } from '../lib/simpleAuth.js';
+import { auth, signInUser, signOutUser } from '../lib/simpleAuth.js';
+import socketClient from '../lib/socketClient.js';
 import { 
   initializeGameState, 
   drawTile, 
@@ -107,33 +108,46 @@ const initialState = {
 export function GameProvider({ children }) {
   const [state, dispatch] = useReducer(gameReducer, initialState);
 
-  // Initialize user authentication
+  // Initialize user authentication and socket connection
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((user) => {
       dispatch({ type: 'SET_GAME_STATE', payload: { user } });
     });
 
-    return unsubscribe;
+    // Connect to socket server
+    socketClient.connect();
+
+    // Set up socket event listeners
+    socketClient.onRoomUpdate((roomData) => {
+      dispatch({ type: 'UPDATE_ROOM_STATE', payload: roomData });
+      
+      // If game is playing and we have game data, update local game state
+      if (roomData.gameState === 'playing' && roomData.gameData) {
+        dispatch({ type: 'SET_GAME_STATE', payload: { gameState: roomData.gameData } });
+      }
+    });
+
+    socketClient.onGameUpdate((gameData) => {
+      dispatch({ type: 'SET_GAME_STATE', payload: { gameState: gameData } });
+    });
+
+    socketClient.onChatMessage((message) => {
+      dispatch({ type: 'ADD_CHAT_MESSAGE', payload: message });
+    });
+
+    socketClient.onError((error) => {
+      dispatch({ type: 'SET_GAME_STATE', payload: { error: error.message } });
+    });
+
+    return () => {
+      unsubscribe();
+      socketClient.disconnect();
+    };
   }, []);
 
   // Subscribe to game room updates
   const subscribeToGame = (gameCode) => {
-    if (state.unsubscribe) {
-      state.unsubscribe();
-    }
-
-    const unsubscribe = subscribeToGameRoom(gameCode, (roomData) => {
-      if (roomData) {
-        dispatch({ type: 'UPDATE_ROOM_STATE', payload: roomData });
-        
-        // If game is playing and we have game data, update local game state
-        if (roomData.gameState === 'playing' && roomData.gameData) {
-          dispatch({ type: 'SET_GAME_STATE', payload: { gameState: roomData.gameData } });
-        }
-      }
-    });
-
-    dispatch({ type: 'SET_GAME_STATE', payload: { gameCode, unsubscribe } });
+    dispatch({ type: 'SET_GAME_STATE', payload: { gameCode } });
   };
 
   // Start a new game
@@ -141,9 +155,9 @@ export function GameProvider({ children }) {
     const gameState = initializeGameState(players);
     dispatch({ type: 'SET_GAME_STATE', payload: { gameState } });
     
-    // Update Firebase with initial game state
+    // Send to server via Socket.IO
     if (state.gameCode) {
-      updateGameState(state.gameCode, gameState);
+      socketClient.startGame(state.gameCode);
     }
     
     return gameState;
@@ -151,58 +165,52 @@ export function GameProvider({ children }) {
 
   // Game actions
   const drawTileAction = async (playerId) => {
-    dispatch({ type: 'DRAW_TILE', playerId });
-    
-    // Update Firebase
-    if (state.gameCode && state.gameState) {
-      const newState = drawTile(state.gameState, playerId);
-      await updateGameState(state.gameCode, newState);
+    // Send move to server
+    if (state.gameCode) {
+      socketClient.makeMove(state.gameCode, playerId, { type: 'DRAW_TILE' });
     }
   };
 
   const playSetAction = async (playerId, tileIds) => {
-    dispatch({ type: 'PLAY_SET', playerId, tileIds });
-    
-    // Update Firebase
-    if (state.gameCode && state.gameState) {
-      const newState = playSet(state.gameState, playerId, tileIds);
-      await updateGameState(state.gameCode, newState);
+    // Send move to server
+    if (state.gameCode) {
+      socketClient.makeMove(state.gameCode, playerId, { type: 'PLAY_SET', tileIds });
     }
   };
 
   const startManipulationAction = (playerId) => {
-    dispatch({ type: 'START_MANIPULATION', playerId });
+    // Send move to server
+    if (state.gameCode) {
+      socketClient.makeMove(state.gameCode, playerId, { type: 'START_MANIPULATION' });
+    }
   };
 
   const confirmManipulationAction = async (playerId) => {
-    dispatch({ type: 'CONFIRM_MANIPULATION', playerId });
-    
-    // Update Firebase
-    if (state.gameCode && state.gameState) {
-      const newState = confirmManipulation(state.gameState, playerId);
-      await updateGameState(state.gameCode, newState);
+    // Send move to server
+    if (state.gameCode) {
+      socketClient.makeMove(state.gameCode, playerId, { type: 'CONFIRM_MANIPULATION' });
     }
   };
 
   const cancelManipulationAction = (playerId) => {
-    dispatch({ type: 'CANCEL_MANIPULATION', playerId });
+    // Send move to server
+    if (state.gameCode) {
+      socketClient.makeMove(state.gameCode, playerId, { type: 'CANCEL_MANIPULATION' });
+    }
   };
 
   const processAITurnAction = async () => {
-    dispatch({ type: 'PROCESS_AI_TURN' });
-    
-    // Update Firebase
-    if (state.gameCode && state.gameState) {
-      const newState = processAITurn(state.gameState);
-      await updateGameState(state.gameCode, newState);
+    // AI turns are processed on the server
+    if (state.gameCode) {
+      socketClient.makeMove(state.gameCode, 'ai', { type: 'AI_TURN' });
     }
   };
 
   const sendChatMessage = async (playerId, message) => {
     if (state.gameCode) {
-      const player = state.gameState?.players.find(p => p.id === playerId);
+      const player = state.gameState?.players.find(p => p.id === playerId) || state.user;
       if (player) {
-        await firebaseAddChatMessage(state.gameCode, playerId, player.username, message);
+        socketClient.sendChatMessage(state.gameCode, playerId, player.username, message);
       }
     }
   };

@@ -6,7 +6,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Label } from '@/components/ui/label.jsx';
 import { Separator } from '@/components/ui/separator.jsx';
 import { useGame } from '../contexts/GameContext.jsx';
-import { createGameRoom, joinGameRoom, generateGameCode, checkGameCodeExists } from '../lib/simpleAuth.js';
+import { generateGameCode } from '../lib/simpleAuth.js';
+import socketClient from '../lib/socketClient.js';
 import { Plus, Users, LogOut, Gamepad2, Dice1, Dice2, Dice3 } from 'lucide-react';
 
 export default function MainMenu({ username, onLogout, onScreenChange }) {
@@ -28,19 +29,16 @@ export default function MainMenu({ username, onLogout, onScreenChange }) {
       
       if (useCustomCode && customCode.trim()) {
         gameCode = customCode.trim().toUpperCase();
-        const exists = await checkGameCodeExists(gameCode);
-        if (exists) {
-          setError('Game code already exists. Please choose a different code.');
-          return;
-        }
       } else {
-        // Generate unique code
-        do {
-          gameCode = generateGameCode();
-        } while (await checkGameCodeExists(gameCode));
+        gameCode = generateGameCode();
       }
       
-      const gameRoom = await createGameRoom(user.uid, username, gameCode);
+      const gameRoom = await socketClient.createRoom(user.uid, username, gameCode, {
+        maxPlayers: 4,
+        aiDifficulty: 'medium',
+        allowSpectators: false
+      });
+      
       subscribeToGame(gameCode);
       setCreateDialogOpen(false);
       onScreenChange('room');
@@ -57,7 +55,7 @@ export default function MainMenu({ username, onLogout, onScreenChange }) {
     setIsJoining(true);
     try {
       const gameCode = joinCode.trim().toUpperCase();
-      await joinGameRoom(gameCode, user.uid, username);
+      await socketClient.joinRoom(gameCode, user.uid, username);
       subscribeToGame(gameCode);
       setJoinDialogOpen(false);
       onScreenChange('room');
