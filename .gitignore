@@ -101,3 +101,5 @@ firestore-debug.log
 
 # Local development
 .vite/
+server/venv/
+server/__pycache__/
